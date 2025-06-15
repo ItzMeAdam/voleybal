@@ -13,9 +13,9 @@ const COURT_BOTTOM = GROUND_Y;
 
 // Player and AI setup (side view positions)
 const player = { x: 200, y: GROUND_Y, radius: 20, color: '#1976d2', dx: 0, dy: 0, speed: 4, vy: 0, onGround: true, jumping: false, action: null, glideVx: 0, actionTimer: 0 };
-const teammate = { x: 300, y: GROUND_Y, radius: 20, color: '#64b5f6' };
+const teammate = { x: 220, y: GROUND_Y, radius: 20, color: '#64b5f6' };
 const opponent1 = { x: 600, y: GROUND_Y, radius: 20, color: '#d32f2f' };
-const opponent2 = { x: 700, y: GROUND_Y, radius: 20, color: '#e57373' };
+const opponent2 = { x: 820, y: GROUND_Y, radius: 20, color: '#e57373' };
 const ball = { x: 350, y: GROUND_Y - 60, radius: 22, color: '#fff176', vx: 0, vy: 0 };
 
 // Input state
@@ -30,10 +30,6 @@ let gameState = 'waitingForServe'; // 'waitingForServe', 'playing'
 let teammateTouched = false;
 let opponent1Touched = false;
 let opponent2Touched = false;
-
-// Team touch counters
-let leftTeamTouches = 0;
-let rightTeamTouches = 0;
 
 let foulMessage = '';
 let foul = false;
@@ -64,7 +60,7 @@ let aiServeTimeout = null;
 
 // Set fixed positions for front and back bots
 const OPP_FRONT_X = NET_X + 80;
-const OPP_BACK_X = canvas.width - 120;
+const OPP_BACK_X = canvas.width - 50;
 
 // Track last left team toucher: 'player' or 'teammate'
 let lastLeftToucher = null;
@@ -87,6 +83,31 @@ let isPaused = false;
 // Add a flag to track if the player wants to spike
 let wantToSpike = false;
 
+// Add back team touch counters
+let leftTeamTouches = 0;
+let rightTeamTouches = 0;
+
+// Add cooldown timers for AI touches
+let teammateTouchCooldown = 0;
+let opponent1TouchCooldown = 0;
+let opponent2TouchCooldown = 0;
+
+// Add a flag to prevent multiple hits per contact for opponent1
+let opponent1HasHit = false;
+
+// AI serve state machine
+let aiServeState = null; // null, 'toss', 'wait', 'jump', 'hit', 'done'
+let aiServeTimer = 0;
+let aiServeBallStart = { x: 0, y: 0 };
+
+// === Debug Menu Variables ===
+let DEBUG_REACH = 48; // default for front (was 32, now more)
+let DEBUG_BACK_REACH = 42; // default for back (was 28, now more)
+let DEBUG_SPEED = 4.8;
+let DEBUG_GRAVITY = 0.10;
+let DEBUG_JUMP = -5.8;
+let DEBUG_SHOT_POWER = 1.0;
+
 function resetBotTouches() {
   teammateTouched = false;
   opponent1Touched = false;
@@ -97,6 +118,9 @@ function resetTeamTouches() {
   leftTeamTouches = 0;
   rightTeamTouches = 0;
   lastTouchSide = null;
+  teammateTouchCooldown = 0;
+  opponent1TouchCooldown = 0;
+  opponent2TouchCooldown = 0;
 }
 
 function resetFoul() {
@@ -206,7 +230,7 @@ function rallyReset() {
   player.jumping = false;
   player.action = null;
   player.glideVx = 0;
-  teammate.x = 300;
+  teammate.x = 220;
   teammate.y = GROUND_Y;
   teammate.vy = 0;
   teammate.onGround = true;
@@ -221,7 +245,7 @@ function rallyReset() {
   opponent1.onGround = true;
   opponent1.jumping = false;
   opponent1.action = null;
-  opponent2.x = 700;
+  opponent2.x = 820;
   opponent2.y = GROUND_Y;
   opponent2.vy = 0;
   opponent2.onGround = true;
@@ -266,7 +290,7 @@ document.addEventListener('keydown', (e) => {
     player.action = null;
     player.glideVx = 0;
     // Reset AI
-    teammate.x = 300;
+    teammate.x = 220;
     teammate.y = GROUND_Y;
     teammate.vy = 0;
     teammate.onGround = true;
@@ -278,7 +302,7 @@ document.addEventListener('keydown', (e) => {
     opponent1.onGround = true;
     opponent1.jumping = false;
     opponent1.action = null;
-    opponent2.x = 700;
+    opponent2.x = 820;
     opponent2.y = GROUND_Y;
     opponent2.vy = 0;
     opponent2.onGround = true;
@@ -309,7 +333,7 @@ document.addEventListener('keydown', (e) => {
     player.action = null;
     player.glideVx = 0;
     // Reset AI on serve
-    teammate.x = 300;
+    teammate.x = 220;
     teammate.y = GROUND_Y;
     teammate.vy = 0;
     teammate.onGround = true;
@@ -321,7 +345,7 @@ document.addEventListener('keydown', (e) => {
     opponent1.onGround = true;
     opponent1.jumping = false;
     opponent1.action = null;
-    opponent2.x = 700;
+    opponent2.x = 820;
     opponent2.y = GROUND_Y;
     opponent2.vy = 0;
     opponent2.onGround = true;
@@ -352,7 +376,7 @@ document.addEventListener('keydown', (e) => {
   if (gameState !== 'playing') return;
   if (key === ' ' && player.onGround) {
     // Jump (higher, but not too high)
-    player.vy = -5.8;
+    player.vy = -7.2;
     player.onGround = false;
     player.jumping = true;
     player.action = 'jump';
@@ -401,6 +425,23 @@ document.addEventListener('keydown', (e) => {
     }
     return;
   }
+  if (e.key === '-') {
+    const menu = document.getElementById('debugMenu');
+    menu.style.display = menu.style.display === 'none' ? 'block' : 'none';
+    // Sync slider values to current
+    document.getElementById('reachSlider').value = DEBUG_REACH;
+    document.getElementById('backReachSlider').value = DEBUG_BACK_REACH;
+    document.getElementById('speedSlider').value = DEBUG_SPEED;
+    document.getElementById('gravitySlider').value = DEBUG_GRAVITY;
+    document.getElementById('jumpSlider').value = DEBUG_JUMP;
+    document.getElementById('shotPowerSlider').value = DEBUG_SHOT_POWER;
+    document.getElementById('reachValue').textContent = DEBUG_REACH;
+    document.getElementById('backReachValue').textContent = DEBUG_BACK_REACH;
+    document.getElementById('speedValue').textContent = DEBUG_SPEED;
+    document.getElementById('gravityValue').textContent = DEBUG_GRAVITY;
+    document.getElementById('jumpValue').textContent = DEBUG_JUMP;
+    document.getElementById('shotPowerValue').textContent = DEBUG_SHOT_POWER;
+  }
 });
 
 document.addEventListener('keyup', (e) => {
@@ -446,15 +487,19 @@ function updatePlayer() {
       player.glideVx = 0;
     }
   } else {
-    // In air, glide forward if jump was with D
+    // In air, allow left/right movement (reduced control)
+    if (keys['a']) player.dx = -player.speed * 0.6;
+    if (keys['d']) player.dx = player.speed * 0.6;
+    player.x += player.dx;
+    // Optional: keep glideVx for legacy forward jump boost
     player.x += player.glideVx || 0;
   }
-  // Floaty jump physics
+  // Less floaty jump physics (increase gravity)
   if (!player.onGround) {
     if (player.vy < 0) {
-      player.vy += 0.05;
+      player.vy += 0.07;
     } else {
-      player.vy += 0.10;
+      player.vy += 0.12;
     }
     player.y += player.vy;
     if (player.y >= GROUND_Y) {
@@ -516,37 +561,8 @@ function updateBall() {
   }
   prevBallSide = currentBallSide;
 
-  // Out detection
-  if (!isOut && ball.y + ball.radius >= GROUND_Y) {
-    if (ball.x < COURT_LEFT || ball.x > COURT_RIGHT) {
-      isOut = true;
-      ball.color = '#d32f2f';
-      // Out of bounds: point to team that did NOT last touch
-      if (lastTouchSide === 'left') {
-        awardPoint('Out: Team 1 hit it out!', 'right');
-      } else if (lastTouchSide === 'right') {
-        awardPoint('Out: Team 2 hit it out!', 'left');
-      } else if (isServe) {
-        // No touch after serve: receiving team gets point
-        if (nextServeSide === 'left') {
-          awardPoint('Out: Team 2 missed serve!', 'left');
-        } else {
-          awardPoint('Out: Team 1 missed serve!', 'right');
-        }
-      } else {
-        // Default: right gets point if out on left, left gets point if out on right
-        if (ball.x < NET_X) {
-          awardPoint('Out: Team 1 side!', 'right');
-        } else {
-          awardPoint('Out: Team 2 side!', 'left');
-        }
-      }
-      return;
-    }
-  }
-
   // In-bounds ground collision: award point and show message (only once per rally)
-  if (!isOut && !foul && !winMessage && !ballHasBounced && ball.y + ball.radius >= GROUND_Y && ball.x >= COURT_LEFT && ball.x <= COURT_RIGHT) {
+  if (!foul && !winMessage && !ballHasBounced && ball.y + ball.radius >= GROUND_Y && ball.x >= 0 && ball.x <= canvas.width) {
     ballHasBounced = true;
     // Ball lands on left side
     if (ball.x < NET_X) {
@@ -603,16 +619,18 @@ function updateBall() {
     }
     ball.vx *= -0.8;
   }
-  // Net top collision
+  // Net top collision (bounce off top of net, for all downward collisions)
   if (
     ball.x > NET_X - NET_WIDTH/2 &&
     ball.x < NET_X + NET_WIDTH/2 &&
-    ball.y + ball.radius > GROUND_Y - NET_HEIGHT
+    ball.y + ball.radius >= GROUND_Y - NET_HEIGHT &&
+    ball.y - ball.radius < GROUND_Y - NET_HEIGHT &&
+    ball.vy > 0
   ) {
-    if (ball.y < GROUND_Y - NET_HEIGHT) {
-      ball.y = GROUND_Y - NET_HEIGHT - ball.radius;
-      ball.vy *= -0.8;
-    }
+    // Ball hits the top of the net
+    ball.y = GROUND_Y - NET_HEIGHT - ball.radius; // Place just above net
+    ball.vy *= -0.7; // Bounce up, dampened
+    ball.vx *= 0.85; // Slightly dampen horizontal speed
   }
 
   // Wall collision
@@ -651,8 +669,10 @@ function playerBallAction() {
       player.actionTimer = 8;
     }
     if (player.action && validMoves.includes(player.action)) {
-      if (lastTouchSide !== 'left') leftTeamTouches = 0;
+      // Remove resetting leftTeamTouches to 0 for consecutive player hits
+      // if (lastTouchSide !== 'left') leftTeamTouches = 0;
       lastTouchSide = 'left';
+      leftTeamTouches++;
       // Only handle player actions below
       switch (player.action) {
         case 'bump':
@@ -662,7 +682,7 @@ function playerBallAction() {
           break;
         case 'set':
           ball.vx = 0;
-          ball.vy = -6.5;
+          ball.vy = -5.2;
           lastPlayerSpikeS = false;
           break;
         case 'spike':
@@ -706,6 +726,13 @@ function playerBallAction() {
           lastPlayerSpikeS = false;
           break;
       }
+      if (leftTeamTouches > 3) {
+        foul = true;
+        foulMessage = 'Team 1 has fouled the touch rule!';
+        ball.color = '#d32f2f';
+        awardFoulPoint('left');
+        return;
+      }
       player.action = null;
       player.actionTimer = 0;
     }
@@ -715,16 +742,24 @@ function playerBallAction() {
 function drawCourt() {
   // Clear
   ctx.clearRect(0, 0, canvas.width, canvas.height);
-  // Out area (green) on both sides
-  ctx.fillStyle = '#66bb6a';
-  ctx.fillRect(0, GROUND_Y, 100, 30); // left out
-  ctx.fillRect(canvas.width - 100, GROUND_Y, 100, 30); // right out
-  // Court (grey floor)
+  // Make the whole ground grey
   ctx.fillStyle = '#bdbdbd';
-  ctx.fillRect(100, GROUND_Y, canvas.width - 200, 30);
+  ctx.fillRect(0, GROUND_Y, canvas.width, canvas.height - GROUND_Y);
   // Net (black)
   ctx.fillStyle = '#111';
   ctx.fillRect(NET_X - NET_WIDTH/2, GROUND_Y - NET_HEIGHT, NET_WIDTH, NET_HEIGHT);
+}
+
+// Draw a landing indicator for the ball
+function drawBallLandingIndicator() {
+  if (ballState !== BallState.IN_PLAY) return;
+  // Draw a red circle at the ball's current x position on the ground
+  ctx.beginPath();
+  ctx.arc(ball.x, GROUND_Y, 16, 0, Math.PI * 2);
+  ctx.strokeStyle = '#d32f2f';
+  ctx.lineWidth = 3;
+  ctx.stroke();
+  ctx.lineWidth = 1;
 }
 
 function drawPlayer(p) {
@@ -757,7 +792,7 @@ function aiUpdate(ai, side, touchedFlagName) {
   // During serve, bots stay at initial positions
   if (gameState === 'waitingForServe' || isServe) {
     if (ai === teammate) {
-      ai.x = 300;
+      ai.x = 220;
       ai.y = GROUND_Y;
     } else if (ai === opponent1) {
       if (!(isServe && nextServeSide === 'right')) {
@@ -766,7 +801,7 @@ function aiUpdate(ai, side, touchedFlagName) {
       }
       if (ai.locked) ai.x = canvas.width - 50;
     } else if (ai === opponent2) {
-      ai.x = 700;
+      ai.x = 820;
       ai.y = GROUND_Y;
     }
     ai.vy = 0;
@@ -779,7 +814,7 @@ function aiUpdate(ai, side, touchedFlagName) {
   if (isServe && !ballCrossedNetAfterServe) {
     // Ball hasn't crossed the net yet, bots stay at default positions
     if (ai === teammate) {
-      ai.x = 300;
+      ai.x = 220;
       ai.y = GROUND_Y;
     } else if (ai === opponent1) {
       if (!(isServe && nextServeSide === 'right')) {
@@ -788,7 +823,7 @@ function aiUpdate(ai, side, touchedFlagName) {
       }
       if (ai.locked) ai.x = canvas.width - 50;
     } else if (ai === opponent2) {
-      ai.x = 700;
+      ai.x = 820;
       ai.y = GROUND_Y;
     }
     ai.vy = 0;
@@ -797,7 +832,7 @@ function aiUpdate(ai, side, touchedFlagName) {
     ai.action = null;
     return;
   }
-  // Teammate logic: only move if ball is coming toward them or will land near them
+  // Teammate logic: move to intercept the ball or return to default position
   if (ai === teammate) {
     // Predict where the ball will land (if in air and on left side)
     let predictedX = null;
@@ -808,52 +843,45 @@ function aiUpdate(ai, side, touchedFlagName) {
     }
     // Only move if ball is coming toward their area (within 100px of their default x)
     let shouldMove = false;
-    if (predictedX !== null && Math.abs(predictedX - 300) < 100) {
+    if (predictedX !== null && Math.abs(predictedX - 220) < 100) {
       shouldMove = true;
     }
     // If should move, go to predictedX, else return to default
-    let targetX = shouldMove ? predictedX : 300;
+    let targetX = shouldMove ? predictedX : 220;
     if (Math.abs(ai.x - targetX) > 5) {
-      if (ai.x < targetX) ai.x += 3.2;
-      else ai.x -= 3.2;
+      if (ai.x < targetX) ai.x += 4.8;
+      else ai.x -= 4.8;
     }
     ai.x = Math.max(ai.radius, Math.min(NET_X - ai.radius, ai.x));
-    // AI teammate jumps to set if the ball is high and within reach
-    if (
-      !ai.jumping && ai.onGround &&
-      Math.abs(ai.x - ball.x) < 60 &&
-      ball.y < ai.y - 45 &&
-      ball.y > COURT_TOP + 30
-    ) {
-      ai.vy = -5.8;
-      ai.onGround = false;
-      ai.jumping = true;
-      ai.action = 'jump';
-    }
-    // Only allow set, never bump or spike
-    if (ball.y > ai.y - 30 && Math.abs(ai.x - ball.x) < 60 && Math.abs(ball.vy) > 0) {
-      if (lastLeftToucher !== 'teammate') {
-        ai.action = 'set';
-        ball.vx = 1.5;
-        ball.vy = -6.5;
-        teammateTouched = true;
-        lastLeftToucher = 'teammate';
-        leftTeamTouches++;
-        if (leftTeamTouches > 3) {
-          foul = true;
-          foulMessage = 'Team 1 has fouled the touch rule!';
-          ball.color = '#d32f2f';
-          awardFoulPoint('left');
-          return;
-        }
-      }
+    // Teammate: initiate set if ball is close and not already setting
+    let teammateInSetRange = (
+      ball.x < NET_X &&
+      Math.abs(ai.x - ball.x) < DEBUG_REACH * 2.5 &&
+      Math.abs(ball.y - (ai.y - ai.radius)) < DEBUG_REACH * 2.1 &&
+      ai.action !== 'set'
+    );
+    if (teammateInSetRange) {
+      ai.action = 'set';
+      // Set the ball upward and forward
+      let towardSpiker = opponent1.x - ai.x;
+      let vx = towardSpiker * 0.08 + 1.5;
+      vx = Math.max(-4, Math.min(4, vx)); // Clamp between -4 and 4
+      // Power scaling based on distance, but if ball is directly above, use full power
+      let dx = ai.x - ball.x;
+      let dy = (ai.y - ai.radius) - ball.y;
+      let dist = Math.sqrt(dx * dx + dy * dy);
+      let maxDist = Math.sqrt((DEBUG_REACH * 2.5) * (DEBUG_REACH * 2.5) + (DEBUG_REACH * 2.1) * (DEBUG_REACH * 2.1));
+      let isDirectlyAbove = Math.abs(dx) < 12;
+      let powerScale = isDirectlyAbove ? 1 : (1 - 0.5 * (dist / maxDist));
+      ball.vx = vx * powerScale * DEBUG_SHOT_POWER;
+      ball.vy = -5.2 * powerScale * DEBUG_SHOT_POWER;
     }
     // Gravity for AI
     if (!ai.onGround) {
       if (ai.vy < 0) {
-        ai.vy += 0.05;
+        ai.vy += DEBUG_GRAVITY * 0.5;
       } else {
-        ai.vy += 0.10;
+        ai.vy += DEBUG_GRAVITY;
       }
       ai.y += ai.vy;
       if (ai.y >= GROUND_Y) {
@@ -864,27 +892,43 @@ function aiUpdate(ai, side, touchedFlagName) {
         ai.action = null;
       }
     }
+    if (ai.action === 'set') {
+      if (teammateTouchCooldown === 0) {
+        if (lastLeftToucher !== 'teammate') leftTeamTouches = 0;
+        lastLeftToucher = 'teammate';
+        leftTeamTouches++;
+        teammateTouchCooldown = 12;
+        if (leftTeamTouches > 3) {
+          foul = true;
+          foulMessage = 'Team 1 has fouled the touch rule!';
+          ball.color = '#d32f2f';
+          awardFoulPoint('left');
+          return;
+        }
+      }
+      ai.action = null;
+    }
     return;
   }
-  // Spiker (opponent1): move to spike position and spike after set
+  // Spiker (opponent1): always move to the ball on right side
   if (ai === opponent1) {
     let targetX = RIGHT_SPIKE_X;
-    // Move to spike position if a set is coming (rightTeamTouches >= 2)
-    let shouldMove = false;
-    if (
-      rightTeamTouches >= 2 &&
-      ball.x > NET_X &&
-      ball.y < GROUND_Y - NET_HEIGHT + 60
-    ) {
-      shouldMove = true;
+    // Predict where the ball will land (if in air and on right side)
+    let predictedX = null;
+    if (ball.x > NET_X && ball.vy > 0 && ball.y < GROUND_Y - 10) {
+      let t = (GROUND_Y - ball.y) / ball.vy;
+      predictedX = ball.x + ball.vx * t;
+      predictedX = Math.max(NET_X + ai.radius, Math.min(canvas.width - ai.radius, predictedX));
     }
-    if (shouldMove && Math.abs(ai.x - targetX) > 5) {
-      if (ai.x < targetX) ai.x += 3.2;
-      else ai.x -= 3.2;
-    } else if (!shouldMove && Math.abs(ai.x - 600) > 5) {
-      // Return to default position if not spiking
-      if (ai.x < 600) ai.x += 3.2;
-      else ai.x -= 3.2;
+    // Always move to the ball's predicted landing spot if on right side
+    if (ball.x > NET_X) {
+      targetX = predictedX !== null ? predictedX : ball.x;
+    } else {
+      targetX = 600; // Default position if ball is on left
+    }
+    if (Math.abs(ai.x - targetX) > 5) {
+      if (ai.x < targetX) ai.x += 4.8;
+      else ai.x -= 4.8;
     }
     ai.x = Math.max(NET_X + ai.radius, Math.min(canvas.width - ai.radius, ai.x));
     // Jump for spike if set is coming
@@ -896,31 +940,40 @@ function aiUpdate(ai, side, touchedFlagName) {
       ball.vx < 0 &&
       ball.y < GROUND_Y - NET_HEIGHT + 60
     ) {
-      ai.vy = -5.8;
+      ai.vy = DEBUG_JUMP;
       ai.onGround = false;
       ai.jumping = true;
       ai.action = 'jump';
       ai.hasSpiked = false;
     }
-    // Spike if in air and close to ball
-    if (
-      !ai.onGround &&
-      !ai.hasSpiked &&
-      Math.abs(ai.x - RIGHT_SPIKE_X) < 18 &&
-      Math.abs(ball.x - RIGHT_SPIKE_X) < 18 &&
-      Math.abs(ball.y - SPIKE_SET_Y) < 30 &&
-      ball.vy > 0
-    ) {
-      ball.vx = -14;
-      ball.vy = 7;
-      ai.hasSpiked = true;
+    // In aiUpdate for opponent1, use the flag to prevent multiple hits per contact
+    let inHitRange = (
+      ball.x > NET_X &&
+      Math.abs(ai.x - ball.x) < DEBUG_REACH &&
+      Math.abs(ball.y - (ai.y - ai.radius)) < DEBUG_REACH * 0.875
+    );
+    if (inHitRange && ai.jumping && !opponent1HasHit && ai.action !== 'spike') {
+      ai.action = 'spike';
+      // Powerful spike: fast and downward
+      ball.vx = -10.5;
+      ball.vy = 8.5;
+      opponent1HasHit = true;
+    } else if (inHitRange && !ai.jumping && !opponent1HasHit && ai.action !== 'hit') {
+      ai.action = 'hit';
+      // Normal hit: upward and left
+      ball.vx = -2.5;
+      ball.vy = -7.5;
+      opponent1HasHit = true;
+    }
+    if (!inHitRange) {
+      opponent1HasHit = false;
     }
     // Gravity
     if (!ai.onGround) {
       if (ai.vy < 0) {
-        ai.vy += 0.05;
+        ai.vy += DEBUG_GRAVITY * 0.5;
       } else {
-        ai.vy += 0.10;
+        ai.vy += DEBUG_GRAVITY;
       }
       ai.y += ai.vy;
       if (ai.y >= GROUND_Y) {
@@ -932,9 +985,24 @@ function aiUpdate(ai, side, touchedFlagName) {
         ai.hasSpiked = false;
       }
     }
+    if (ai.action === 'hit' || ai.action === 'spike') {
+      if (opponent1TouchCooldown === 0) {
+        lastRightToucher = 'opponent1';
+        rightTeamTouches++;
+        opponent1TouchCooldown = 12;
+        if (rightTeamTouches > 3) {
+          foul = true;
+          foulMessage = 'Team 2 has fouled the touch rule!';
+          ball.color = '#d32f2f';
+          awardFoulPoint('right');
+          return;
+        }
+      }
+      ai.action = null;
+    }
     return;
   }
-  // Setter (opponent2): always set toward spiker when receiving, never bump
+  // Setter (opponent2): can now bump to save low balls, or set if high
   if (ai === opponent2) {
     let minX = NET_X + 60;
     let maxX = canvas.width - ai.radius;
@@ -945,43 +1013,77 @@ function aiUpdate(ai, side, touchedFlagName) {
       predictedX = ball.x + ball.vx * t;
       predictedX = Math.max(minX, Math.min(maxX, predictedX));
     }
-    // Only move if ball is coming toward their area (within 100px of their default x)
+    // Only move if ball is coming toward their area (within 120px of their default x)
     let shouldMove = false;
-    if (predictedX !== null && Math.abs(predictedX - 700) < 100) {
+    if (predictedX !== null && Math.abs(predictedX - 820) < 120) {
       shouldMove = true;
     }
-    let targetX = shouldMove ? predictedX : 700;
+    let targetX = shouldMove ? predictedX : OPP_BACK_X;
     if (Math.abs(ai.x - targetX) > 5) {
-      if (ai.x < targetX) ai.x += 3.2;
-      else ai.x -= 3.2;
+      if (ai.x < targetX) ai.x += 8.5; // Move even faster for defense
+      else ai.x -= 8.5;
     }
     ai.x = Math.max(minX, Math.min(maxX, ai.x));
-    // Always set if close to ball (never bump)
-    if (ball.y > ai.y - 30 && Math.abs(ai.x - ball.x) < 60 && Math.abs(ball.vy) > 0) {
-      if (lastRightToucher !== 'opponent2') {
-        ai.action = 'set';
-        // Set high and toward spiker
-        let towardSpiker = opponent1.x - ai.x;
-        ball.vx = towardSpiker * 0.08 + 1.5;
-        ball.vy = -7.5; // higher set
-        opponent2Touched = true;
-        lastRightToucher = 'opponent2';
-        rightTeamTouches++;
-        if (rightTeamTouches > 3) {
-          foul = true;
-          foulMessage = 'Team 2 has fouled the touch rule!';
-          ball.color = '#d32f2f';
-          awardFoulPoint('right');
-          return;
-        }
+    // Defensive save: bump if ball is low and close
+    let bumpRange = (
+      ball.x > NET_X &&
+      Math.abs(ai.x - ball.x) < DEBUG_BACK_REACH &&
+      ball.y > GROUND_Y - 60 &&
+      Math.abs(ball.y - (ai.y - ai.radius)) < DEBUG_BACK_REACH * 0.86 &&
+      ai.action !== 'bump'
+    );
+    if (bumpRange) {
+      ai.action = 'bump';
+      // Bump the ball up and left
+      // Power scaling based on distance, but if ball is directly above or far back, use full power
+      let dx = ai.x - ball.x;
+      let dy = (ai.y - ai.radius) - ball.y;
+      let dist = Math.sqrt(dx * dx + dy * dy);
+      let maxDist = Math.sqrt(DEBUG_BACK_REACH * DEBUG_BACK_REACH + (DEBUG_BACK_REACH * 0.86) * (DEBUG_BACK_REACH * 0.86));
+      let isDirectlyAbove = Math.abs(dx) < 12; // within 12px horizontally
+      let isFarBack = ball.x > canvas.width - 120;
+      let powerScale = (isDirectlyAbove || isFarBack) ? 1 : (1 - 0.5 * (dist / maxDist));
+      // If this is the second touch for the opponents, increase power by 20%
+      if (ai === opponent2 && rightTeamTouches === 2) {
+        powerScale *= 1.2;
       }
+      ball.vx = -2.0 * powerScale * DEBUG_SHOT_POWER;
+      ball.vy = -4.5 * powerScale * DEBUG_SHOT_POWER;
+    }
+    // Otherwise, set if ball is high enough and close
+    let setRange = (
+      ball.x > NET_X &&
+      Math.abs(ai.x - ball.x) < DEBUG_BACK_REACH * 0.79 &&
+      Math.abs(ball.y - (ai.y - ai.radius)) < DEBUG_BACK_REACH * 0.79 &&
+      ai.action !== 'set'
+    );
+    if (setRange) {
+      ai.action = 'set';
+      // Set high and toward spiker
+      let towardSpiker = opponent1.x - ai.x;
+      let vx = towardSpiker * 0.08 + 1.5;
+      vx = Math.max(-4, Math.min(4, vx)); // Clamp between -4 and 4
+      // Power scaling based on distance, but if ball is directly above or far back, use full power
+      let dx = ai.x - ball.x;
+      let dy = (ai.y - ai.radius) - ball.y;
+      let dist = Math.sqrt(dx * dx + dy * dy);
+      let maxDist = Math.sqrt((DEBUG_BACK_REACH * 0.79) * (DEBUG_BACK_REACH * 0.79) * 2);
+      let isDirectlyAbove = Math.abs(dx) < 12;
+      let isFarBack = ball.x > canvas.width - 120;
+      let powerScale = (isDirectlyAbove || isFarBack) ? 1 : (1 - 0.5 * (dist / maxDist));
+      // If this is the second touch for the opponents, increase power by 20%
+      if (ai === opponent2 && rightTeamTouches === 2) {
+        powerScale *= 1.2;
+      }
+      ball.vx = vx * powerScale * DEBUG_SHOT_POWER;
+      ball.vy = -5.2 * powerScale * DEBUG_SHOT_POWER;
     }
     // Gravity
     if (!ai.onGround) {
       if (ai.vy < 0) {
-        ai.vy += 0.05;
+        ai.vy += DEBUG_GRAVITY * 0.5;
       } else {
-        ai.vy += 0.10;
+        ai.vy += DEBUG_GRAVITY;
       }
       ai.y += ai.vy;
       if (ai.y >= GROUND_Y) {
@@ -991,6 +1093,38 @@ function aiUpdate(ai, side, touchedFlagName) {
         ai.jumping = false;
         ai.action = null;
       }
+    }
+    // Touch logic for bump
+    if (ai.action === 'bump') {
+      if (opponent2TouchCooldown === 0) {
+        lastRightToucher = 'opponent2';
+        rightTeamTouches++;
+        opponent2TouchCooldown = 12;
+        if (rightTeamTouches > 3) {
+          foul = true;
+          foulMessage = 'Team 2 has fouled the touch rule!';
+          ball.color = '#d32f2f';
+          awardFoulPoint('right');
+          return;
+        }
+      }
+      ai.action = null;
+    }
+    // Touch logic for set
+    if (ai.action === 'set') {
+      if (opponent2TouchCooldown === 0) {
+        lastRightToucher = 'opponent2';
+        rightTeamTouches++;
+        opponent2TouchCooldown = 12;
+        if (rightTeamTouches > 3) {
+          foul = true;
+          foulMessage = 'Team 2 has fouled the touch rule!';
+          ball.color = '#d32f2f';
+          awardFoulPoint('right');
+          return;
+        }
+      }
+      ai.action = null;
     }
     return;
   }
@@ -1009,23 +1143,106 @@ function aiServe() {
   // Place the ball in front of the spiker
   ball.x = spiker.x - 30;
   ball.y = spiker.y - spiker.radius - ball.radius - 10;
-  // Bump the ball gently over the net
-  // vx: leftward, vy: upward
-  ball.vx = -5.5;
-  ball.vy = -6.5;
-  ballState = BallState.IN_PLAY;
-  gameState = 'playing';
+  ball.vx = 0;
+  ball.vy = 0;
+  ballState = BallState.OFF; // Not in play until hit
+  gameState = 'playing'; // Enter playing state for animation
   resetBotTouches();
   resetTeamTouches();
   resetFoul();
   resetOut();
-  isServe = false; // Ball is in play after bump
+  isServe = true; // Ball is not in play yet
+  // Mark serve state
+  aiServeState = 'toss';
+  aiServeTimer = 0;
+  aiServeBallStart.x = ball.x;
+  aiServeBallStart.y = ball.y;
+  // Mark touch for scoring will be done on hit
+  lastTouchSide = null;
+  lastRightToucher = null;
+  rightTeamTouches = 0;
+  opponent1Touched = false;
+  spiker.locked = true;
+}
+
+function updateAIServe() {
+  if (aiServeState === null) return;
+  let spiker = opponent1;
+  switch (aiServeState) {
+    case 'toss':
+      // Animate toss: ball moves up
+      if (aiServeTimer === 0) {
+        ball.vx = 0;
+        ball.vy = -6.5; // Toss up
+      }
+      ball.y += ball.vy;
+      ball.vy += 0.18; // Gravity for toss
+      if (ball.vy > 0 && ball.y >= aiServeBallStart.y - 60) {
+        // Ball reached peak and is coming down, start wait
+        ball.vy = 0;
+        aiServeState = 'wait';
+        aiServeTimer = 0;
+      }
+      aiServeTimer++;
+      break;
+    case 'wait':
+      // Wait a short moment before jumping
+      aiServeTimer++;
+      if (aiServeTimer > 18) {
+        aiServeState = 'jump';
+        aiServeTimer = 0;
+        spiker.vy = -7.2; // Jump up
+        spiker.onGround = false;
+        spiker.jumping = true;
+      }
+      break;
+    case 'jump':
+      // Animate jump
+      spiker.y += spiker.vy;
+      if (spiker.vy < 0) spiker.vy += 0.07;
+      else spiker.vy += 0.12;
+      // Move forward a bit
+      spiker.x -= 2.2;
+      // Wait until spiker is close to ball in air
+      if (
+        spiker.y - spiker.radius < ball.y + ball.radius &&
+        Math.abs(spiker.x - ball.x) < 40 &&
+        spiker.vy > 0 // On the way down
+      ) {
+        aiServeState = 'hit';
+        aiServeTimer = 0;
+      }
+      // Land
+      if (spiker.y >= GROUND_Y) {
+        spiker.y = GROUND_Y;
+        spiker.vy = 0;
+        spiker.onGround = true;
+        spiker.jumping = false;
+        if (aiServeState !== 'hit') {
+          aiServeState = 'hit'; // Failsafe: hit anyway
+          aiServeTimer = 0;
+        }
+      }
+      break;
+    case 'hit':
+      // Hit the ball with strong leftward velocity
+      ball.vx = -7.5;
+      ball.vy = -5.5;
+      ballState = BallState.IN_PLAY;
+      isServe = false;
+      aiServeState = 'done';
   // Mark touch for scoring
   opponent1Touched = true;
   rightTeamTouches = 1;
   lastTouchSide = 'right';
   lastRightToucher = 'opponent1';
   spiker.locked = false;
+      break;
+    case 'done':
+      // Serve sequence complete
+      aiServeState = null;
+      break;
+  }
 }
 
 function drawPauseMenu() {
@@ -1057,11 +1274,17 @@ function drawScoreboard() {
 
 function gameLoop() {
   drawCourt();
+  drawBallLandingIndicator();
   updatePlayer();
   aiUpdate(teammate, 'left', 'teammateTouched');
   aiUpdate(opponent1, 'right', 'opponent1Touched');
   aiUpdate(opponent2, 'right', 'opponent2Touched');
+  // Add: update AI serve sequence if active
+  if (aiServeState !== null) {
+    updateAIServe();
+  } else {
   updateBall();
+  }
   playerBallAction();
   drawPlayer(player);
   drawPlayer(teammate);
@@ -1069,9 +1292,9 @@ function gameLoop() {
   drawPlayer(opponent2);
   drawBall();
   drawServeMessage();
-  drawTouches();
   drawScores();
   drawScoreboard();
+  drawTouches();
   drawPauseMenu();
   if (gameState === 'waitingForServe' && nextServeSide === 'right' && !aiServeTimeout) {
     aiServeTimeout = setTimeout(() => {
@@ -1079,6 +1302,10 @@ function gameLoop() {
       aiServeTimeout = null;
     }, 1200 + Math.random() * 800);
   }
+  // Decrement AI touch cooldowns
+  if (teammateTouchCooldown > 0) teammateTouchCooldown--;
+  if (opponent1TouchCooldown > 0) opponent1TouchCooldown--;
+  if (opponent2TouchCooldown > 0) opponent2TouchCooldown--;
   if (!isPaused) requestAnimationFrame(gameLoop);
 }
 
@@ -1110,4 +1337,38 @@ function awardFoulPoint(foulingSide) {
   } else {
     awardPoint('Foul: Team 2!', 'left');
   }
-} 
+}
+
+function setupDebugMenu() {
+  const reachSlider = document.getElementById('reachSlider');
+  const backReachSlider = document.getElementById('backReachSlider');
+  const speedSlider = document.getElementById('speedSlider');
+  const gravitySlider = document.getElementById('gravitySlider');
+  const jumpSlider = document.getElementById('jumpSlider');
+  const shotPowerSlider = document.getElementById('shotPowerSlider');
+  reachSlider.addEventListener('input', () => {
+    DEBUG_REACH = parseInt(reachSlider.value);
+    document.getElementById('reachValue').textContent = DEBUG_REACH;
+  });
+  backReachSlider.addEventListener('input', () => {
+    DEBUG_BACK_REACH = parseInt(backReachSlider.value);
+    document.getElementById('backReachValue').textContent = DEBUG_BACK_REACH;
+  });
+  speedSlider.addEventListener('input', () => {
+    DEBUG_SPEED = parseFloat(speedSlider.value);
+    document.getElementById('speedValue').textContent = DEBUG_SPEED;
+  });
+  gravitySlider.addEventListener('input', () => {
+    DEBUG_GRAVITY = parseFloat(gravitySlider.value);
+    document.getElementById('gravityValue').textContent = DEBUG_GRAVITY;
+  });
+  jumpSlider.addEventListener('input', () => {
+    DEBUG_JUMP = parseFloat(jumpSlider.value);
+    document.getElementById('jumpValue').textContent = DEBUG_JUMP;
+  });
+  shotPowerSlider.addEventListener('input', () => {
+    DEBUG_SHOT_POWER = parseFloat(shotPowerSlider.value);
+    document.getElementById('shotPowerValue').textContent = DEBUG_SHOT_POWER;
+  });
+}
+if (typeof window !== 'undefined') setTimeout(setupDebugMenu, 0); 
